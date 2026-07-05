@@ -1,154 +1,213 @@
-# PRD:Self-Learning Agent(teach skill 的独立智能体化)
+# PRD — Collapse the teaching orchestration into a single agent
 
-> **进度(2026-07-01)**:本 PRD 描述的移植 MVP 已完成(issues #001–#012 全 done)。
-> **Turn 级联 / 流程对齐**亦已完成(#013 done,见 `docs/adr/0010`):一次调用自动级联 mission→research→zpd→lesson→reference。流程与质量对齐(#014–#018)亦全部 done。
-> 项目导航见 `OVERVIEW.md`。
->
-> 本 PRD 综合自设计讨论,决策依据见 `docs/adr/0001`–`0010` 与领域词汇表 `CONTEXT.md`。
-> 语言规则:本文档为中文;**仅"发送给 LLM 的 prompt/rubric"用英文且逐字承接 `teach/SKILL.md`**;给学习者的输出随学习者语言。
+> Standalone spec.
+> A fresh session can start from this file alone.
+> It supersedes the previous graph-based design.
+> See `OVERVIEW.md` for the doc map and the list of superseded documents.
 
 ## Problem Statement
 
-`teach` 是一个已发布、已验证成功的 Claude Code skill:它把当前目录当作教学工作区,以学习者的**个人使命(Mission)**为锚,基于**最近发展区(ZPD)**涌现式地产出一节节漂亮、可交互、有据可查的 HTML 课程,并跨会话地记录学习进展。
+The standalone port teaches worse than the original `teach` skill running inside Claude Code.
 
-但它今天只能**寄居在 Claude Code 宿主里**运行:搜索、模型、文件读写、开浏览器全靠宿主提供;它无法被其他系统调用,无法独立部署,也无法服务于自有应用之外的学习者。我们需要把这套已验证的教学能力**原封不动地承接出来**,变成一个可独立运行、可被其他系统通过 API 调用的智能体。
+This is not a model problem.
+The same free models (Qwen, MiMo, MiniMax) produce excellent tuition when they run the `teach` prose inside Claude Code's general agent loop.
+Claude Code *is* an orchestration layer — a general reason–act loop (read files, reason, write files, run a command, repeat) — and the `teach` skill is just prose injected into it.
+
+The port replaced that single fluid loop with a rigid state machine.
+It shattered one agent into a 16-node LangGraph: an 11-node teaching graph (`router → {mission | research | zpd | lesson → reference | assessment | wisdom | new_topic} → finalize`) plus a 5-node lesson subgraph (`draft → validate → critique → decide → rewrite`).
+On top of that sit a deterministic router, a 556-line `validators.py`, ~10 Pydantic lesson schemas, and four `interrupt()` points.
+
+Three concrete harms follow:
+
+1. **Quality regression.** Every fixed rail is a place the port can be dumber than the free-flowing skill.
+   The rigid router, the forced validate/critique/rewrite gate, and the per-node structured-output decomposition constrain the model into worse output than it produces when left to reason fluidly.
+2. **Unmaintainable.** ~7,180 lines across 24 modules, dominated by `prompts.py` (1,381) and `lesson.py` (917).
+   The owner is stuck tuning the graph rather than the teaching.
+3. **Eval could not attach.** A prior attempt (rubric + promptfoo) failed because it bolted an eval onto an already-complex runtime and made the whole thing worse.
+
+A specific, faithful-porting failure compounds this: the mission interview.
+In Claude Code the interview feels crisp — concrete options, one round for *purpose* then one for *current level*.
+But `teach` never specifies that; SKILL.md says only "your first job should be to question the user on why they want to learn this."
+The crisp interview is Claude improvising well.
+Free models do not improvise it from one thin sentence, so the port's information-gathering is weak, which then poisons the Mission, the ZPD, and every Lesson downstream.
 
 ## Solution
 
-把 `teach` 移植为一个基于 **LangGraph** 的独立智能体:
+Collapse the entire teaching graph into **one general ReAct agent**, and move all quality control **offline**.
 
-- 教学逻辑(Mission 驱动、ZPD、Knowledge/Skills/Wisdom 三分、Fluency vs Storage、课程/参考文档/词汇表/资源/学习记录)**完全忠实承接**,不重新设计。
-- 用一张**结构化教学流水线图**(单图多能力节点)表达,每个节点承接 `teach/SKILL.md` 的相关切片作为 prompt。
-- 底层模型默认走 Qwen(DashScope/百炼),但模型层可换;重认知节点用最强档,轻节点用便宜档(per-node model routing)。
-- MVP 以**单用户 CLI** 驱动同一张图验证教学引擎;产品化时把同一张图包成 **HTTP API**,供其他系统调用。该智能体**永不自管账号、鉴权、计费**——身份由调用方提供。
-- 初期用两个**灯塔领域**取材验证:AI 通识课内容(知识型)+ 高职院校学生技能(技能型)。但能力面保持领域通用。
+From the learner's point of view nothing about the pedagogy changes — Mission-driven teaching, ZPD, Knowledge/Skills/Wisdom, Lessons, reference docs, glossary, learning records all remain.
+What changes is that a single agent, driven by faithfully-ported `teach` prose plus a small tool set, navigates the Workspace fluidly — exactly as the skill does inside Claude Code — instead of being marched through fixed nodes.
+
+Core moves:
+
+- **One agent, not a graph.**
+  A single ReAct agent (LangGraph `create_react_agent`) whose system prompt is the ported `teach` prose and whose tools are file read/write/list/glob, web search, and open-file.
+  Mission establishment, research, ZPD selection, lesson authoring, reference building, assessment, and wisdom stop being nodes; they become things the prose tells the one agent to do — as in the source skill.
+
+- **Turn-boundary questions; no mid-turn interrupts.**
+  When the agent needs information (unclear Mission, unknown level), it ends the Turn *with* a question, and the learner's next message is simply the next Turn.
+  The Workspace files carry state across Turns, so the agent re-derives "where am I" by reading `MISSION.md` / `learning-records/` — it never resumes a suspended stack.
+  All four `interrupt()` sites and the resume plumbing are deleted.
+
+- **No runtime quality gate.**
+  The agent writes Lesson HTML directly via the write tool, like `teach`.
+  The `draft → validate → critique → decide → rewrite` subgraph, `validators.py`, the critique call, and the Pydantic lesson schemas are deleted.
+  A free model can now commit an imperfect Lesson; the safety net is the offline eval catching systematic badness so the prose gets fixed — not a per-Lesson runtime guard.
+
+- **Quality lives in exactly one place: an offline, black-box eval.**
+  The eval shares zero code with the runtime.
+  It drives the same `runner.invoke_turn` a real user hits, reads the artifact files that come out, LLM-judges them against `RUBRIC.md`, and logs to Langfuse.
+  When a Lesson or interview is bad, the fix is the **prose or the rubric**, then re-eval — never a new runtime gate.
+
+- **Add an explicit `[ours]` interview spec.**
+  Because `teach` is silent on interview quality, add explicit prose guidance (offer concrete options as a tactic; gather *purpose*, then *current level*, then *constraints*) plus a matching outcome-based rubric item.
+  The rubric measures the *outcome* — "could a competent teacher write `MISSION.md` and pick the first Lesson from what was gathered?" — not the tactics (never "must have 4 options" or "must be 2 rounds").
+
+- **Keep the essential shell.**
+  `runner.invoke_turn` (the kernel and single test seam), Workspace-as-files (files are the memory, not graph state), multi-tenancy, Langfuse callbacks, the `spawn_topic` handoff, and turn-end artifact diffing all stay.
+
+- **Net-negative lines is the acceptance criterion.**
+  Every change deletes code/docs or is load-bearing for the single-agent spine.
+  Superseded ADRs and design docs are retired in the same change as the code they describe, so no archaeology confuses the next reader.
 
 ## User Stories
 
-### 学习者(经由调用方系统间接交互)
-
-1. 作为学习者,我想说出"我想学 X",以便智能体开始教我这个主题。
-2. 作为学习者,当我的学习目标不清晰时,我希望智能体先访谈我"为什么想学",以便它把教学锚定在我的真实使命上。
-3. 作为学习者,我希望每节课都紧扣我的使命,以便我感到所学与我的目标直接相关。
-4. 作为学习者,我希望每节课的难度"挑战刚刚好"(落在我的 ZPD),以便我既不被劝退也不觉得无聊。
-5. 作为学习者,我希望每节课只聚焦一个紧凑的点、短到能快速完成,以便不超出我的工作记忆并获得一个明确的小胜利。
-6. 作为学习者,我希望课程美观、排版清晰(Tufte 风格),以便我日后愿意回看复习。
-7. 作为学习者,我希望课程中的每个论断都有引用背书,以便我信任所学内容。
-8. 作为学习者,我希望每节课推荐一个最高质量的一手资源,以便我能深入权威来源。
-9. 作为学习者,对于技能类内容,我希望有基于紧反馈闭环的互动练习,以便我真正掌握而非只是看过。
-10. 作为学习者,我希望测验选项不通过格式泄露答案(等长),以便练习真正考验我的检索能力。
-11. 作为学习者,我希望课程运用检索练习、间隔、交错等"必要难度",以便我形成长期记忆(storage strength)而非短暂的流畅错觉(fluency)。
-12. 作为学习者,我希望做完课回来能和智能体对话、被评估、被追问误解,以便它据此调整下一节教什么。
-13. 作为学习者,我希望几天后回来能从上次中断处无损继续,以便学习不因离开而丢失。
-14. 作为学习者,当我提出需要实战智慧(wisdom)的问题时,我希望智能体先尝试回答、再把我引导到高声望的社区,以便我在真实世界检验技能。
-15. 作为学习者,我希望智能体维护一个术语词汇表(Glossary)并在所有课程中一致使用,以便复杂概念更易掌握。
-16. 作为学习者,我希望随时能向智能体追问不清楚的地方,以便把它当作我的老师。
-17. 作为学习者,我希望拿到压缩的参考文档(速查表/算法/词汇表),以便日后快速查阅。
-18. 作为学习者,当智能体暂时查不到可信资料时,我希望它坦白告知并暂缓该课,而不是给我未经核实的内容,以便我始终信任所学。
-
-### 调用方系统(API 消费者)
-
-19. 作为调用方系统,我想以 `(user_id, topic)` 为键发送一条学习者消息并取回智能体的回复,以便在我自己的界面里承载对话。
-20. 作为调用方系统,我希望回复里附带"本轮新产出了哪些产物"的引用,以便我及时把新课程呈现给学习者。
-21. 作为调用方系统,我想列出并下载某个学习者的产物(课程 HTML、参考文档、词汇表、使命、学习记录、资源),以便在我自己的界面中渲染它们。
-22. 作为调用方系统,我想查询某个学习者的状态/进度(当前使命、已有课程、学习记录),以便展示学习进展。
-23. 作为调用方系统,我想删除或重置某个学习者的工作区,以便处理学生退课、毕业、数据删除或重新学习。
-24. 作为调用方系统,我希望能导出某个学习者的整个工作区(打包全部产物),以便备份、迁移或让学习者带走自己的数据。(应有,可延后)
-25. 作为调用方系统,我希望多个学习者/主题之间数据严格隔离,以便并发服务互不串扰。
-26. 作为调用方系统,我希望我提供的身份被直接信任(智能体不做鉴权),以便鉴权与计费完全由我这边掌控。
-
-### 运营/开发者
-
-27. 作为开发者,我希望逐节点追踪每次运行(走了哪个节点、prompt、用了哪个模型、token、耗时、输出),以便持续调优。
-28. 作为开发者,我希望底层模型可一行切换、且每个节点能绑不同模型档,以便在不动业务逻辑的前提下做质量/成本权衡。
-29. 作为开发者,我希望搜索源藏在可替换接口后,以便在不动业务节点的情况下更换搜索提供方。
-30. 作为开发者,我希望每一处对原 SKILL.md 的修改/扩展在代码中都有注释,标明对应原文段落与修改原因,以便审计"承接是否忠实"。
-31. 作为开发者,我希望课程质量由架构(机器校验 + 自审重写)保证而非寄望模型一次写好,以便课程质量稳定可控。
+1. As a learner, I want the agent to interview me about *why* I want to learn a topic before teaching, so that every Lesson is grounded in my real-world Mission.
+2. As a learner, I want the interview to offer concrete options rather than open-ended vague prompts, so that I can answer quickly and precisely.
+3. As a learner, I want the agent to ask about my current level after my purpose, so that the first Lesson lands in my Zone of Proximal Development.
+4. As a learner, I want a follow-up question to arrive as the natural next thing the agent says (a normal chat turn), so that the conversation feels continuous without special UI.
+5. As a learner, I want each Lesson to be a short, self-contained HTML file tied to my Mission, so that I get one tangible win within my working-memory budget.
+6. As a learner, I want Lessons to reuse existing assets and cite trusted sources, so that quality and consistency hold across sessions.
+7. As a learner, I want the agent to find high-quality external resources before relying on its own parametric knowledge, so that I learn correct material.
+8. As a learner, I want reference cheat-sheets built alongside Lessons, so that I can look things up quickly later.
+9. As a learner, I want a glossary that records terms only once I can use them correctly, so that it reflects compressed understanding, not vocabulary to cram.
+10. As a learner, I want the agent to write a learning record only when I demonstrate genuine understanding, disclose prior knowledge, correct a misconception, or my Mission shifts, so that records stay meaningful rather than logging every session.
+11. As a learner, I want to be able to change my Mission, with the agent confirming, updating `MISSION.md`, and recording the change, so that my learning re-grounds when my goals evolve.
+12. As a learner, I want to start a brand-new topic and have the agent hand off cleanly into a fresh Workspace, so that topics stay isolated.
+13. As a learner, I want to ask a practitioner-level "wisdom" question and get an answer that ultimately points me to a community, so that I learn where expertise really lives.
+14. As a learner, I want the agent to reply in my Workspace language, so that lessons and questions feel native.
+15. As an API integrator, I want a single `POST /chat` turn endpoint driving the same kernel as the CLI, so that both surfaces behave identically.
+16. As an API integrator, I want each Turn to report the artifacts it produced, so that I can surface new Lessons/references to my UI.
+17. As an API integrator, I want multi-tenant isolation by `user_id` and topic, so that learners never see each other's Workspace.
+18. As an agent developer, I want the whole teaching flow to be one agent + prose + a few tools, so that I tune teaching quality by editing prose, not by rewiring a graph.
+19. As an agent developer, I want no runtime validate/critique/rewrite machinery, so that the agent writes fluidly and there is far less code to maintain.
+20. As an agent developer, I want an offline eval that treats the agent as a black box through `invoke_turn`, so that adding eval never adds runtime complexity.
+21. As an eval author, I want to score the produced Lesson HTML against `RUBRIC.md` with an LLM judge over seeded Workspace fixtures, so that I get a reproducible quality signal.
+22. As an eval author, I want to score the interview Turn (given unknown Mission/level, is the gathered information sufficient?) as a separate unit, so that interview failures are isolated from Lesson failures.
+23. As an eval author, I want eval scores logged to Langfuse, so that I can track quality across prompt iterations over time.
+24. As an agent developer, I want to first tune the judge until it agrees with my own human labels and then freeze it, so that I can subsequently attribute score changes to prompt changes alone.
+25. As an agent developer, I want the rubric held stable while I iterate the prompt, so that I never confuse "I changed the yardstick" with "I improved the agent."
+26. As a maintainer, I want the redesign to delete more than it adds — including retiring ADRs and docs for the removed graph — so that the project becomes easier to read.
+27. As a new contributor, I want `OVERVIEW.md` and `PRD.md` to describe only the current single-agent design, so that I am never misled by documentation of the removed architecture.
 
 ## Implementation Decisions
 
-### 架构形态
-- **结构化教学流水线图,而非薄 ReAct agent**(ADR-0001)。单图多能力节点:Router、Mission 访谈、Research、ZPD/规划、Lesson 创作、Assessment、记录。粗粒度按能力拆,节点内"胖提示"。
-- **不引入 supervisor / 多智能体**(ADR-0005)。某节点(最可能是 Research)未来可按需升级为**子图**,但不全局铺多智能体。supervisor 的"上下文隔离省 token"红利已由文件模型获得。
-- **控制流:每条学习者消息调用一次图**,以 `thread_id` 为键;checkpointer 恢复状态;有未决 `interrupt` 则直接 `resume`,否则 Router 才做意图分类。学习者离开数天 = 无调用,状态静躺 checkpointer,无需常驻进程。
+### Runtime architecture
 
-### 状态与持久化(三层)(ADR-0003)
-- **A 会话/图状态** → LangGraph **checkpointer**(MVP:SQLite;生产:Postgres)。
-- **B 长期学习者记忆**(`MISSION.md`、`learning-records/`、`GLOSSARY.md`、`RESOURCES.md`)与 **C 学习产物**(`lessons/*.html`、`reference/*`、`assets/*`)→ **普通文件**,按 `workspaces/{user_id}/{topic_slug}/` 命名空间多租户隔离。
-- 文件是 B、C 的**单一事实源**;节点在会话开始读入图状态。**不引入独立 store**(避免双写不一致)。未来"跨大量记录的语义检索"作为派生只读索引添加,绝不作事实源。
+- **Single ReAct agent.**
+  Replace the teaching graph and lesson subgraph with one `create_react_agent`.
+  Its system prompt is the ported `teach` prose; its tools are the minimal set below.
+  This is deliberately the simplest LangGraph construct, which also lowers the graph-tuning burden that currently blocks the owner.
+- **Tools (minimal, swappable).**
+  Workspace file operations (read, write, list, glob), a swappable web-search tool, and open-file.
+  Retain the swappable-search principle from ADR-0007.
+  No tool performs teaching judgment; judgment lives in the prose.
+- **Turn-boundary interaction.**
+  The agent asks by ending a Turn with a question; the next user message is the next Turn.
+  Remove all `interrupt()`/resume plumbing.
+  This removes the `temperature=0.0`-for-replay constraint currently forced on pre-interrupt decisions.
+- **State shrinks to essentially messages plus tenancy keys.**
+  With one agent, per-node handoff fields (`next_lesson_scope`, `last_lesson`, `intent`, interview scratch) disappear.
+  Keep `user_id`, `topic`/`topic_slug`, and the turn-end artifact diff (`baseline_files` → `new_artifacts`).
+  `spawn_topic` remains as the driver handoff signal.
+- **Workspace-as-files stays (ADR-0003).**
+  Files under `workspaces/{user_id}/{topic_slug}/` remain the single source of truth and the cross-Turn memory.
+- **Model configuration simplifies.**
+  Per-node model tiering collapses toward a single primary model knob (still swappable to Claude or a free model), since there is now one agent.
+  `models.get_model` remains the only place the model is chosen.
+- **Failure posture is revisited.**
+  The previous "refuse rather than degrade" posture (ADR-0009) was tied to the deleted runtime gate.
+  Without a gate, the agent produces output and the offline eval catches systematic problems.
+  ADR-0009 is retired or rewritten accordingly.
 
-### 产品形态(ADR-0004)
-- 产品 = **被其他系统调用的 API**,不是终端用户应用。智能体**不**管账号/鉴权/计费;多租户仅靠调用方传入的 `user_id`/`topic`。
-- CLI 与 API 是同一张图的两个薄驱动器。"开浏览器看课"是 CLI 专属便利,API 路径没有。
+### Interview (`[ours]` extension)
 
-### Lesson 创作节点(ADR-0006)
-- 是一个**子图**:`起草(强模型,复用 assets 组件)→ 机器校验 → LLM 自审(对照 rubric)→ 不达标则重写`,直到通过。
-- **生成策略 = 共享设计系统(一份 CSS token 表)+ `assets/` 可复用组件库**;创作前先读 `assets/` 用现成组件拼,需要时新增可复用组件。
-- **机器校验是确定性代码,不是 LLM**:HTML 可解析、内部/资源链接可达、每个引用都能在 `RESOURCES.md` 找到、测验选项等长、术语与 GLOSSARY 一致。
-- **重试有上限 + 兜底**:重写达最大次数仍不达标 → 不交付、请学习者稍后再来(见失败姿态)。
+- Add explicit interview prose to the system prompt: gather **purpose**, then **current level**, then **constraints**; offer concrete options as a *tactic* to reduce ambiguity.
+- These are authoring tactics, not rubric law.
+- Add one interview rubric item scored on **outcome**: is the gathered information sufficient and unambiguous enough to write `MISSION.md` and select the first Lesson?
 
-### 课内反馈(ADR-0002)
-- **(i) 课程 HTML 内置 JS** 处理闭合型练习(即时判分,课程保持静态可移植);**(ii) 对话式评估**由智能体处理开放型/wisdom 级检验并更新学习记录。
-- **(iii)** "课程回调后端 API、评估自动回流 ZPD" **延后**(产品化复杂度集中处);MVP 不做。
+### Offline eval harness
 
-### 模型与工具
-- **模型层可换**(ADR 原则,见记忆):默认 Qwen via DashScope;per-node 路由,重认知节点用最强档(qwen-max 级或保留切到 Claude 的口子),轻节点用便宜档。**绝不为模型能力限制而修改架构。**
-- **极简工具面**(ADR-0007):一个 web 搜索(藏在 `search(query)->candidates` 可换接口后,MVP = 百炼内置 `enable_search`)+ 需要时一个简单网页抓取。**不上 MCP、不上 RAG/向量库、不上 reranker**。文件读写、开浏览器是普通代码,非 LLM 工具。
-- 搜索提供方唯一硬约束是**可达性**(Tavily 国内够不着;**无数据出境限制**,查询面向全球)。
+- **Black-box only.**
+  The harness imports nothing from the graph/runtime internals; it calls `runner.invoke_turn` (or the HTTP API), reads artifact files, and judges them.
+- **Two units.**
+  (1) Lesson artifact judged against `RUBRIC.md` L-items.
+  (2) Interview Turn judged against the new information-sufficiency item.
+  Both are single-shot: one seeded fixture in, one artifact/question out, one score vector.
+- **Fixtures.**
+  Seeded Workspace directories checked into the repo (a `MISSION.md`, some `learning-records/`, optionally `RESOURCES.md`) plus a user message.
+- **Plain script, not a framework.**
+  A small Python runner loops fixtures and pushes scores to Langfuse.
+  Do not reintroduce promptfoo or any eval framework in the runtime.
+- **Methodology discipline (encode in the eval README, not code):**
+  human-label ~10 lessons/interviews as ground truth → tune the judge/rubric until it agrees with the human → **freeze the rubric** → then iterate only the prompt, using the frozen judge as the yardstick.
+  Never move rubric and prompt in the same step.
+- **Routing/session eval is phase 2.**
+  Artifact + interview eval ship first.
+  Decision-quality eval (did it route correctly) and simulated multi-turn learner sessions are added later only if Langfuse logs show routing is where quality breaks.
 
-### Prompt 架构(承接 teach 的核心机制)
-- **逐段承接 `teach/SKILL.md`,不整篇灌**(否则 context 迅速撑满、能力下滑)。两层结构:
-  - **薄"共享教学宪法"层**:只装真正横切的原文切片(Philosophy 的 Knowledge/Skills/Wisdom 三分、Fluency vs Storage、mission-grounding、遵循 GLOSSARY、Wisdom/社区引导),逐字、简短,挂到它触及的每个节点。**横切原则允许必要的重复**。
-  - **节点专属切片**:§Lessons→Lesson 节点、§ZPD→ZPD 节点、§Knowledge/RESOURCES→Research 节点、§Skills→Assessment 节点,等等。
-- **能复用的原文不改一字、不变语言(英文)**;**需修改/扩展处在代码中注释**:标明对应原 SKILL.md 段落 + 修改原因(可追溯,审计"承接是否忠实")。
-- **我们新增的 prompt/rubric 用英文**(仅限发给 LLM 的内容);系统文档、PRD、代码注释用中文;给学习者的输出随学习者语言。
-- **SKILL.md 全段去向已审计**(见 `docs/` 讨论记录),frontmatter 作为 Claude Code 宿主配置自然失效(`disable-model-invocation` 弃用;`argument-hint` 那句可作对话开场引导语)。
+### Prune list (delete in the same change as the code)
 
-### 失败姿态(ADR-0009)
-- **宁缺毋滥,状态不丢**:搜索够不着 → 坦白告知、暂缓该课,**不**降级用脑补知识(违反 "Never trust your parametric knowledge");质量门兜底 = 不交付未达标版;一切硬故障先保证 checkpointer 已存档、可无损续学。
+Code to delete outright:
+`graph.py`, `lesson.py`, `validators.py`, `scoring.py`, `mission.py`, `zpd.py`, `assessment.py`, `wisdom.py`, `research.py`, `reference.py`, `new_topic.py`, and the bulk of `prompts.py`.
+Their behavior moves into the single system prompt and the tool set.
+Evaluate `language.py` and `sanitize.py` for folding into prose/tool helpers rather than standing modules.
 
-### 可观测性(ADR-0016,取代 ADR-0008)
-- **self-hosted Langfuse** 做逐节点链路追踪(自托管,traces 留在自控基础设施上;无数据出境约束,开发/生产皆可)。走 LangChain 回调机制,接线收敛进 `observability.get_callbacks()` 一个缝,由图驱动内核 `runner.invoke_turn` 调用,业务节点零改动;换后端只动这一模块。
+Code to keep and simplify:
+`runner.py` (kernel/seam), `api.py`, `cli.py` (thin drivers), `config.py` (fewer knobs), `models.py`, `workspace.py` (file helpers backing the tools), `tenancy.py`, `observability.py` (Langfuse), `search.py` (web-search tool), `state.py` (shrunk).
+Add one new module assembling the agent (system prompt + tools + `create_react_agent`).
 
-### 运行时
-- MVP:本地 Python CLI 循环驱动图。产品化:用 **LangGraph Server**(`langgraph-cli`)把同一张图包成带 threads/runs 持久化的 HTTP API(自建 Docker 或托管,延后定),另加"产物列举/下载"能力。
+Docs to retire (describe the removed architecture):
+ADR-0001 (structured-pedagogy-graph), ADR-0005 (single-graph-no-supervisor), ADR-0006 (lesson-authoring-node), ADR-0010 (turn-cascade-in-graph-edges), ADR-0011 (first-lesson-menu-and-new-topic-handoff), ADR-0008 (already superseded by 0016).
+Revisit ADR-0009 (failure posture) and ADR-0013 (workspace-language) — rewrite to the single-agent reality or retire.
+Rewrite `CODE.md`, `docs/config.md`, and `OVERVIEW.md` to the single-agent design.
 
-### API 能力面
-1. **对话**:发学习者消息(键 `user_id`,`topic`)→ 取回复 + 本轮产物引用。
-2. **取产物**:列出 + 下载课程/参考文档/词汇表/使命/学习记录/资源。
-3. **查状态/进度**(只读)。
-4. **删除/重置工作区**(必须)。
-5. **导出工作区**(应有,可延后)。
+Docs to keep:
+ADR-0003 (files-as-source-of-truth), ADR-0004 (api-only-product-no-identity), ADR-0007 (minimal-tools-swappable-search), ADR-0012 (memory layer — verify it adds no runtime machinery beyond files), ADR-0016 (Langfuse).
+`CONTEXT.md` (glossary) and `RUBRIC.md` (extended with the interview item).
 
 ## Testing Decisions
 
-好的测试**只验外部行为,不验实现细节**。按最高可用缝优先,确定的缝如下:
-
-- **图层缝(最高,端到端每轮)**:对 `graph.invoke(state)` 喂"学习者消息 + 工作区状态",断言回复与本轮产出的产物。覆盖路由、interrupt/resume、跨会话续接等行为。这是首选的主缝。
-- **确定性校验器缝(最易测、信号最强)**:Lesson 质量门的机器校验是纯函数,直接单测——HTML 可解析、链接可达、引用都在 `RESOURCES.md`、测验选项等长、术语与 GLOSSARY 一致。这是把"课程质量"从概率变保证的关键测试点。
-- **`search()` 接口缝**:搜索藏在可换接口后,测试注入 mock 候选,不打真实网络;用于测 Research 节点的甄别与 RESOURCES 写入逻辑,以及失败姿态(搜索够不着时暂缓而非脑补)。
-- **节点缝**:每个能力节点作为 `(state)->状态更新` 单独测(例如 ZPD 节点在给定 learning-records 下是否选出合理的下一课范围)。仅在图层缝不足以定位时使用,避免过度耦合实现。
-- **rubric 评分缝**:LLM-as-judge 对固定课程样本按 rubric 打分,先用人评校准;用于回归监控课程教学质量。
-
-**被测模块**:教学图(整体行为)、Lesson 子图与其确定性校验器、Research 节点 + search 接口、Router 路由/续接、各产物文件的读写。
-
-**测试原则**:确定性条目(机器校验)= 硬门槛,必须 100% 通过;判断性条目(ZPD 契合、美感等)= rubric 打分,由人评(权威)+ LLM-judge(可自动化代理指标)评估。
+- **What a good test is.**
+  Tests assert external behavior only: given a seeded Workspace fixture and a user message, a Turn produces the right artifact files and an appropriate reply.
+  Tests never assert on internal control flow, node transitions, or intermediate structured outputs — those are exactly the internals being deleted.
+- **Single seam.**
+  All tests drive `runner.invoke_turn`.
+  It is already the kernel behind both CLI and API, and it is what the eval harness uses, so there is one seam across the entire codebase.
+- **Modules under test (through the seam):**
+  the assembled agent's end-to-end Turn behavior — mission interview when `MISSION.md` is absent/vague, research when `RESOURCES.md` is sparse, Lesson creation and file commit, reference/glossary/learning-record writes under their stated conditions, mission-change confirm-and-record, and `spawn_topic` handoff on a new topic.
+- **Eval vs. tests are distinct.**
+  Deterministic behavioral tests (did a Lesson file get written; did the interview Turn end with a question when Mission is unknown) live in the test suite.
+  Subjective quality (is the Lesson good) lives in the offline LLM-judge eval, not in unit tests.
+- **Prior art.**
+  The prior test layout was removed and is being redefined; establish the seeded-fixture + `invoke_turn` pattern as the canonical prior art for all future tests.
 
 ## Out of Scope
 
-- 任何账号体系、鉴权、计费(永久不做——身份由调用方负责)。
-- 终端用户 UI / Web App / 移动端(产品是 API)。
-- (iii) 课程 HTML 回调后端、评估结果自动回流 ZPD 的闭环。
-- RAG / 向量库 / embedding 检索 / reranker;MCP 工具网关。
-- supervisor / 多智能体编排。
-- Research 节点的深度多轮检索子图(MVP 单趟 + 甄别;后续按需升级)。
-- 课程产物上云/对象存储(MVP 用本地文件;逻辑模型不变,延后)。
-- 对 teach 教学法的任何重新设计或"改进"。
+- Changing the pedagogy.
+  Mission/ZPD/Knowledge-Skills-Wisdom/Lessons/reference/glossary/learning-records are ported faithfully, not redesigned.
+- Any runtime quality gate, validator, or critique/rewrite loop.
+  Explicitly removed, not relocated.
+- Routing-quality eval and simulated multi-turn session eval (phase 2).
+- A new eval framework (promptfoo or otherwise) in the runtime.
+- Authentication, accounts, and billing (ADR-0004 unchanged — the agent stays identity-agnostic).
+- Multi-context glossary split (`CONTEXT-MAP.md`); the single `CONTEXT.md` remains until contexts actually split.
 
 ## Further Notes
 
-- **领域范围**:能力面领域通用(忠于 teach),初期用两个灯塔领域取材验证(AI 通识课内容 = 知识型;高职院校学生技能 = 技能型),不收窄产品、也不注入机构大纲。
-- **承接原则(最高优先级)**:本智能体的目的是**承接一个已发布、已验证成功的 skill 的能力**,因此对其 prompt/rubric 的忠实承接(逐段切分 + 可追溯注释 + SKILL.md 全段去向审计)是不可妥协的工程纪律。
-- **rubric(L1–L17)**:已对照 `SKILL.md` + 四个 FORMAT 文件做完整审计,逐条标注出处与"确定性校验 vs 人/LLM 判断"归类;另有 P1–P7 为 agent 行为层标准(资源甄别、mission 访谈/变更、wisdom 引导、reference/glossary 维护、learning-record 写入纪律等)。建议另立权威 `RUBRIC.md`(英文,作为 LLM-facing 评分依据),一处定义、三处复用(课内自审、人评、LLM-judge)。
-- **安全提醒**:历史 scratch 文件曾以明文存放 DashScope API key(现已删除)。该密钥务必轮换并只经环境变量 / `.env`(已 gitignore)注入。
-- **未决待办(PRD 后)**:阶段/任务划分;每个节点具体绑定的模型档;权威 `RUBRIC.md` 落盘;仓库目录结构细化。
+- The central thesis to hold onto: a *general* agent loop plus the `teach` prose already produces great tuition on free models; the port's rigidity is the regression.
+  The redesign restores the general loop and keeps only the shell that makes it an independently operable, API-callable service.
+- The interview is the one place where "faithful porting" would reproduce a weakness, because the good behavior was Claude improvising over a silent spec.
+  This is the only sanctioned `[ours]` capability extension.
+- Guard against re-growth: if a change adds a node, a runtime gate, or a second orchestration layer, it is almost certainly wrong.
+  The eval, not the runtime, is where quality pressure is applied.
