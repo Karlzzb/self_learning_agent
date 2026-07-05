@@ -11,7 +11,7 @@
 节点按教学**能力**粗粒度拆分(Router / Mission / Research / ZPD / Lesson / Reference / Assessment / Wisdom),彼此通过一张共享状态 `TeachState` 通信。
 每条学习者消息**调用一次图**,以 `thread_id = f(user_id, topic_slug)` 为键;有未决 interrupt 就 resume,否则 Router 才做意图分类。
 
-三层持久化(ADR-0003):
+三层状态、两种持久化机制(ADR-0003):
 
 - **A 会话/图状态** → LangGraph checkpointer(SQLite)。即 `TeachState`,见 `state.py`。
 - **B 长期记忆 + C 学习产物** → 工作区**普通文件**,是单一事实源。节点会话开始读入、结束写出,**不**镜像进图状态(避免双写)。
@@ -62,13 +62,45 @@
 
 ## 3. 图拓扑与控制流
 
-```
-START → load_workspace → router ─┬─ mission ──(teach:research|zpd | finalize)→ …
-                                 ├─ research ──(zpd | finalize)────────────→ …
-                                 ├─ zpd → lesson → reference ──────────────→ finalize → END
-                                 ├─ assessment ────────────────────────────→ finalize
-                                 ├─ wisdom ─────────────────────────────────→ finalize
-                                 └─ new_topic ──────────────────────────────→ finalize
+```plantuml
+@startuml
+' 教学图编排拓扑 —— 装配见 graph.build_graph;条件边见 _route / _route_after_mission / _route_after_research
+hide empty description
+skinparam defaultTextAlignment center
+
+state "load_workspace" as LW : 扫基线快照 + 读入工作区语言
+state "router" as R : 意图分类(确定性优先,使命已立才用轻档 LLM)
+state "mission" as M : 使命访谈 / 变更(带 interrupt 提问)
+state "research" as RS : 多查询检索甄别 → 写 RESOURCES.md
+state "zpd" as Z : 选下一课范围(开局出首课菜单 interrupt)
+state "lesson" as L : Lesson 创作子图(见 §6)
+state "reference" as RF : 把课程压成参考文档
+state "assessment" as A : 对话式评估 + 证据级学习记录
+state "wisdom" as W : 先尝试作答 → 引向高声望社区
+state "new_topic" as NT : 领域外新主题 → 写 spawn_topic 交接
+state "finalize" as F : diff 基线/当前 → 本轮 new_artifacts
+
+[*] --> LW
+LW --> R
+R --> M  : mission_establish / mission_change
+R --> NT : new_topic
+R --> A  : assess
+R --> W  : wisdom
+R --> RS : teach 且 RESOURCES.md 未备
+R --> Z  : teach 且 RESOURCES.md 已备
+M --> RS : establish 完成、需先采集资源
+M --> Z  : establish 完成、资源已备
+M --> F  : mission_change(变更使命不产课)
+RS --> Z : 成功写出 RESOURCES.md
+RS --> F : 诚实暂缓(未找到可信源,P1/ADR-0009)
+Z --> L
+L --> RF
+RF --> F
+A --> F
+W --> F
+NT --> F
+F --> [*]
+@enduml
 ```
 
 装配见 `graph.py:build_graph`(节点、边、条件边)。`mission`、`research` 出边是**图内条件边**(#013/ADR-0010),让一次调用在同轮自动级联走完 teach 路径直到交付首课或必须停下问学习者。
@@ -99,6 +131,39 @@ START → load_workspace → router ─┬─ mission ──(teach:research|zpd 
 
 所有触网都收敛在 `models.get_model` 与 `search.search` 两处——这正是测试注入 fake 的两个缝。
 
+```plantuml
+@startuml
+' 一次 Turn 的调用流:薄驱动 → runner 内核 → 教学图 → 能力节点
+skinparam defaultTextAlignment center
+actor "调用方 / CLI" as Caller
+participant "api.py / cli.py\n(薄驱动)" as Driver
+participant "runner.invoke_turn\n(内核)" as Runner
+database "checkpointer\n(SQLite)" as CP
+participant "教学图\n(LangGraph)" as Graph
+participant "能力节点" as Node
+participant "models / search\n(两个可换缝)" as Seams
+database "workspace 文件\n(B/C 单一事实源)" as WS
+
+Caller -> Driver : POST /chat(user_id, topic, message)
+Driver -> Runner : invoke_turn(user_id, topic, message)
+Runner -> Runner : thread_id = f(user_id, topic_slug)
+Runner -> CP : 该 thread 有未决 interrupt?
+alt 有未决 interrupt
+    Runner -> Graph : invoke(Command(resume=message))
+else 无
+    Runner -> Graph : invoke({messages:[Human], ...})
+end
+Graph -> Node : load_workspace → router → 能力节点\n→(teach 时 zpd→lesson→reference)→ finalize
+Node -> Seams : get_model(节点名) / search(query)
+Node -> WS : 会话开始读入基线 / 结束写出产物
+Node --> Graph : 必要时 interrupt() 停下问学习者
+Graph --> Runner : 图状态(messages / __interrupt__ / new_artifacts / spawn_topic)
+Runner -> Runner : _interpret(...)
+Runner --> Driver : TurnResult{reply, new_artifacts, awaiting_input, spawn_topic}
+Driver --> Caller : JSON 响应
+@enduml
+```
+
 ---
 
 ## 5. Prompt 架构(承接 teach 的核心机制)
@@ -122,13 +187,28 @@ START → load_workspace → router ─┬─ mission ──(teach:research|zpd 
 
 见 `lesson.py`(ADR-0006)。一节课不是一次 LLM 调用,而是一张子图:
 
-```
-draft(强模型产结构化内容,内部确定性渲染 self-contained HTML)
-  → validate(#006 确定性机器校验) ──不过──→ decide(带原因重写 / 暂缓)
-        │过
-  → critique(LLM 对照 RUBRIC 判断条目打分) ──不达标──→ decide
-        │达标(每项≥3 且均值≥4.0)
-  → commit(落盘课程 HTML + 重建索引)
+```plantuml
+@startuml
+' Lesson 创作子图 —— 装配见 lesson.build_lesson_subgraph;出边见 _after_validate / _after_critique / _after_decide
+hide empty description
+skinparam defaultTextAlignment center
+
+state "draft" as D : 强模型产结构化 LessonDraft\n+ 内部确定性渲染 self-contained HTML
+state "validate" as V : 确定性机器校验(validators.py,纯函数 pass/fail)
+state "critique" as C : LLM 对照 RUBRIC 给判断条目打分
+state "commit" as CM : 落盘课程 HTML + 重建索引
+state "decide" as DE : _revise_or_defer:重写 or 暂缓
+
+[*] --> D
+D --> V
+V --> C  : det_passed(确定性条目全过)
+V --> DE : 有确定性条目不过(省一次自审调用)
+C --> CM : critique_passed(每项 ≥3 且均值 ≥4.0)
+C --> DE : 未达标
+DE --> D : 未达 LESSON_MAX_ATTEMPTS → 带原因重写
+DE --> [*] : 达重试上限 → 暂缓不交付(ADR-0009,状态不丢)
+CM --> [*]
+@enduml
 ```
 
 子图实际节点名:`draft` / `validate` / `critique` / `commit` / `decide`(`_revise_or_defer`)。HTML 渲染(`render_lesson_html`)是 `_draft` 内部调用的确定性辅助,**不是**独立子图节点。

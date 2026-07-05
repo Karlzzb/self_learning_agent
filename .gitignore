@@ -1,35 +1,42 @@
 # Secrets — 密钥永不入库(身份/密钥由调用方/运营提供,智能体不自管)
 .env
+.env.*
 *.env
 !.env.example
-# 这两个文件目前含明文密钥(待轮换),先排除出版本库
-llm-cif.md
-langsmith.md
 
 # Python
 __pycache__/
 *.py[cod]
+*.egg
 *.egg-info/
 .eggs/
 build/
 dist/
 .venv/
 venv/
+.python-version
 
 # Test / tooling
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.cache/
 .coverage
+coverage.xml
 htmlcov/
+.ipynb_checkpoints/
 
-# LangGraph checkpointer (MVP = SQLite) 与学习者工作区(单一事实源,本地落盘,不入库)
+# Logs
+*.log
+logs/
+
+# LangGraph checkpointer(MVP = SQLite)与学习者工作区(单一事实源,本地落盘,不入库)
 *.sqlite
 *.sqlite3
 checkpoints/
 workspaces/
 
-# Editor
+# Editor / OS
 .idea/
 .vscode/
 .DS_Store

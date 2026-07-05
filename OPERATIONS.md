@@ -122,7 +122,7 @@ curl -X DELETE "http://localhost:8000/workspace?user_id=alice&topic=AI%20通识"
 
 ## 6. 数据落在哪里
 
-两层持久化(ADR-0003):
+三层状态(A / B / C)、两种持久化机制(ADR-0003):
 
 | 层 | 内容 | 位置 | 配置项 |
 | --- | --- | --- | --- |

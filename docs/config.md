@@ -49,11 +49,14 @@ LLM_PROVIDER=anthropic   # 切到 Claude(需配置 ANTHROPIC_API_KEY)
 | `mission_interview` | STRONG | 使命访谈(共情 + 追问) |
 | `research` | MID | 资料检索与甄别 |
 | `zpd` | STRONG | ZPD / 下一课规划 |
-| `lesson` | STRONG | 课程创作 |
+| `lesson` | STRONG | 课程创作(子图起草 + 自审) |
+| `reference` | MID | 参考文档压缩(从已写好的课程蒸馏) |
 | `assessment` | STRONG | 对话式评估 / 追问误解 |
-| `records` | LIGHT | 学习记录写入 |
+| `wisdom` | STRONG | 实战智慧:尝试回答 + 甄别高声望社区 |
+| `judge` | STRONG | LLM-as-judge 回归评分 |
 
 未登记的节点回退到 `DEFAULT_TIER`(MID)。要给某节点换档,只改 `NODE_TIERS` 一行。
+(学习记录写入是确定性动作,不调 LLM,故此表无 `records` 档。)
 
 代码里取模型的唯一入口:
 

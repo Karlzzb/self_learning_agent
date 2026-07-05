@@ -52,21 +52,19 @@ PROVIDER_TIER_MODELS: dict[str, dict[Tier, str]] = {
     },
 }
 
-# 节点 -> 档位 路由表。
-# 节点名对应 PRD「架构形态」里的能力节点(Router、Mission 访谈、Research、
-# ZPD/规划、Lesson 创作、Assessment、记录)。
-# 重认知节点(创作/规划/评估/访谈)用最强档;
-# 轻节点(意图路由、记录落盘等机械动作)用便宜档。
+# 节点名 -> 档位 路由表。键为 ``models.get_model(node_name)`` 的实际传参名(与图节点 /
+# 子图步骤对应);重认知节点(创作/规划/评估/访谈)用最强档,轻节点(意图路由)用便宜档。
+# 注:学习记录写入是**确定性**动作(``workspace.append_learning_record``,不调 LLM),
+# 故此表无 records 档——「何时写记录」是节点的教学判断,「怎么写」是确定性原语。
 NODE_TIERS: dict[str, Tier] = {
     "router": Tier.LIGHT,            # 意图分类,轻
     "mission_interview": Tier.STRONG,  # 使命访谈,重(共情 + 追问)
     "research": Tier.MID,           # 资料检索甄别,中
     "zpd": Tier.STRONG,             # ZPD/下一课规划,重
-    "lesson": Tier.STRONG,          # 课程创作,重(子图起草档)
+    "lesson": Tier.STRONG,          # 课程创作,重(子图起草 + 自审档)
     "reference": Tier.MID,          # 参考文档压缩,中(从已写好的课程蒸馏,非从零创作)
     "assessment": Tier.STRONG,      # 对话式评估/追问误解,重
     "wisdom": Tier.STRONG,          # 实战智慧:尝试回答 + 甄别高声望社区,重
-    "records": Tier.LIGHT,          # 学习记录写入,轻
     "judge": Tier.STRONG,           # LLM-as-judge 回归评分(#012),重(与课程创作同档,严格打分)
 }
 

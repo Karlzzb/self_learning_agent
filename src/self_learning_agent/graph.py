@@ -4,9 +4,10 @@
 #013/ADR-0010 把 ``mission``、``research`` 的出边改成**条件边**,让一个 Turn 内
 自动级联走完 teach 路径,直到交付第一课或必须停下问学习者):
 
-    START → load_workspace → router → {mission | research | zpd | assessment | wisdom} → finalize → END
-                                       mission →(teach:research|zpd)  research →(zpd|finalize)
+    START → load_workspace → router → {mission | research | zpd | assessment | wisdom | new_topic} → finalize → END
+                                       mission →(teach:research|zpd|finalize)  research →(zpd|finalize)
                                                        zpd → lesson → reference → finalize
+                                       assessment | wisdom | new_topic → finalize
 
 - ``load_workspace``:把工作区当前文件扫成基线快照(会话开始读入文件)。
 - ``router``:意图分类。**确定性优先**——``MISSION.md`` 未填充时直接路由到
@@ -36,6 +37,9 @@
   问题时,先据已 curate 知识尝试回答,再把学习者引导到高声望社区(从 search 候选甄别),
   并把社区 / opt-out 偏好增量 upsert 进 RESOURCES.md 的 Wisdom 段。忠实承接 SKILL.md
   §Acquiring Wisdom「attempt to answer - but to ultimately delegate to a community」。
+- ``new_topic``:**新主题能力节点**(见 ``new_topic.py`` / #014 / ADR-0011)。学习者想学当前
+  mission 之外的**另一个领域**时,确认后把新主题名写入图状态 ``spawn_topic``(**不**在旧
+  workspace 写任何文件),直接 ``finalize``;交接由 driver 用新 ``topic`` 另起新 thread / 新记忆续调。
 - ``finalize``:对比基线与当前快照,算出本轮新产物 → ``new_artifacts``。
 
 checkpointer 可注入:默认 SQLite(MVP),测试传 ``MemorySaver`` 保持离线确定性。
