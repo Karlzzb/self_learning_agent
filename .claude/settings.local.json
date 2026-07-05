@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//**)",
+      "Edit(//Users/karlgua/self_learning_agent/**)",
+      "Write(//Users/karlgua/self_learning_agent/**)",
+      "Bash(*)",
+      "WebSearch",
+      "mcp__codebase-memory-mcp__get_architecture",
+      "mcp__codebase-memory-mcp__get_code_snippet"
+    ],
+    "deny": [
+      "Bash(git push:*)"
+    ],
+    "ask": [
+      "Bash(rm:*)",
+      "Bash(rmdir:*)",
+      "Bash(mv:*)"
+    ]
+  }
+}

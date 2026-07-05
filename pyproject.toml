@@ -1,0 +1,48 @@
+[project]
+name = "self-learning-agent"
+version = "0.1.0"
+description = "Standalone teaching agent ported from the `teach` Claude Code skill onto LangGraph + Qwen."
+readme = "CLAUDE.md"
+requires-python = ">=3.10"
+dependencies = [
+    # 核心底座:状态机 / Node-Edge / checkpointer / interrupt
+    "langgraph>=0.2.0",
+    "langchain-core>=0.3.0",
+    # 会话/图状态持久化(MVP = SQLite;生产换 Postgres,ADR-0003)
+    "langgraph-checkpoint-sqlite>=2.0.0",
+    # 模型适配层(承接「模型可换」原则):
+    #   - Qwen via DashScope 走 OpenAI 兼容端点 → langchain-openai
+    #   - 保留切到 Claude 的口子 → langchain-anthropic
+    "langchain-openai>=0.2.0",
+    "langchain-anthropic>=0.2.0",
+    # 配置 / 可观测
+    "python-dotenv>=1.0.0",
+    # 逐节点链路追踪:self-hosted Langfuse(ADR-0016,取代 LangSmith)。走 LangChain
+    # 回调机制,由 observability.get_callbacks() 在图驱动内核处接线。
+    "langfuse>=3.0.0",
+    # 产品形态 = 被其他系统调用的 HTTP API(ADR-0004)。API 是与 CLI 并列的另一个
+    # 薄驱动器:FastAPI 把同一张图(经 runner.invoke_turn)+ 工作区文件原语包成
+    # HTTP 端点,不引入任何业务逻辑分叉。uvicorn 是生产 ASGI 运行时。
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    # FastAPI TestClient(starlette)在底层用 httpx 起内存传输,API 层缝测试据此
+    # 不触真实网络/端口即可断言端点行为。
+    "httpx>=0.27.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+# 测试布局重组中:暂不硬指向某个 testpaths(避免指向不存在的目录),由 pytest 从
+# rootdir 发现;重建测试目录后在此登记其路径。
+pythonpath = ["src"]

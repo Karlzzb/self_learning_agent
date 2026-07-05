@@ -1,0 +1,29 @@
+{
+  "_note": "固定课程样本 + 人评(权威)标注,用于 LLM-as-judge 回归监控与校准(#012)。human_scores 只覆盖 RUBRIC.md 的判断条目(L1/L2/L3/L4/L5/L8/L10/L11/L14/L15/L16);确定性条目(L6/L7/L9/L12/L13/L17)由 #006 机器校验把关,不在此评。",
+  "samples": [
+    {
+      "id": "strong",
+      "html": "0001-strong-sample.html",
+      "human_scores": {
+        "L1": 5, "L2": 5, "L3": 5, "L4": 4, "L5": 5,
+        "L8": 4, "L10": 5, "L11": 5, "L14": 4, "L15": 4, "L16": 4
+      }
+    },
+    {
+      "id": "medium",
+      "html": "0002-medium-sample.html",
+      "human_scores": {
+        "L1": 4, "L2": 4, "L3": 4, "L4": 4, "L5": 4,
+        "L8": 4, "L10": 4, "L11": 4, "L14": 4, "L15": 4, "L16": 4
+      }
+    },
+    {
+      "id": "weak",
+      "html": "0003-weak-sample.html",
+      "human_scores": {
+        "L1": 2, "L2": 2, "L3": 3, "L4": 3, "L5": 2,
+        "L8": 1, "L10": 3, "L11": 3, "L14": 3, "L15": 2, "L16": 1
+      }
+    }
+  ]
+}

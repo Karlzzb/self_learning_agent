@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>weak-sample: history-of-ai-grab-bag</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<h1>人工智能简史(以及很多别的东西)</h1>
+<p class="subtitle">一节什么都讲一点的课</p>
+
+<h2>从图灵到今天</h2>
+<p>这节课会顺带聊到图灵、专家系统、深度学习、芯片产业、哲学里的意识问题、以及几家公司的估值——内容很多,跨度很大。</p>
+<p>我们不做练习,只是把这些名词铺开,读完应该会对「AI 很大」有个模糊印象。</p>
+<p>它和你想达成的具体目标关系不大,但听起来很全面。</p>
+
+<aside class="primary-source" data-primary-source>
+<strong>Primary source:</strong>
+<a href="https://www.deeplearningbook.org">Book: Deep Learning — Goodfellow, Bengio &amp; Courville</a>
+</aside>
+
+<section class="quiz" data-quiz>
+<p><strong>下面哪一项在本课中被提到过?</strong></p>
+<button type="button" class="quiz-option" data-quiz-option data-correct>专家系统这个名词</button>
+<button type="button" class="quiz-option" data-quiz-option>一段可以动手运行的代码</button>
+<button type="button" class="quiz-option" data-quiz-option>明确的下一步行动</button>
+<p class="quiz-feedback" aria-live="polite"></p>
+</section>
+
+<nav class="crosslinks">
+<a href="./index.html">&larr; All lessons</a>
+</nav>
+
+<aside class="ask-agent" data-ask-agent>有问题可以问我。</aside>
+
+<script>
+document.querySelectorAll('[data-quiz]').forEach(function (quiz) {
+  var feedback = quiz.querySelector('.quiz-feedback');
+  quiz.querySelectorAll('[data-quiz-option]').forEach(function (option) {
+    option.addEventListener('click', function () {
+      var correct = option.getAttribute('data-correct') !== null;
+      option.classList.add(correct ? 'is-correct' : 'is-wrong');
+      if (feedback) { feedback.textContent = correct ? '\u2713 Correct.' : '\u2717 Not quite.'; }
+    });
+  });
+});
+</script>
+</body>
+</html>

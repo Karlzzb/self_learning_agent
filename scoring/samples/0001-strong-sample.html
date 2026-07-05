@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>strong-sample: what-is-a-perceptron</title>
+<link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<h1>感知机:一个神经元如何决策</h1>
+<p class="subtitle">为你的转行使命建立第一块基石</p>
+
+<h2>知识:加权求和 + 阈值</h2>
+<p>感知机把每个输入乘以一个权重、求和、再与阈值比较,据此输出 0 或 1。这正是后续多层网络的最小可理解单元。</p>
+<p>权重表示「这个输入有多重要」;调整权重就是最朴素的「学习」。</p>
+
+<aside class="primary-source" data-primary-source>
+<strong>Primary source:</strong>
+<a href="https://www.deeplearningbook.org">Book: Deep Learning — Goodfellow, Bengio &amp; Courville</a>
+</aside>
+
+<section class="quiz" data-quiz>
+<p><strong>感知机如何由输入得到输出?</strong></p>
+<button type="button" class="quiz-option" data-quiz-option data-correct>加权求和后比较阈值</button>
+<button type="button" class="quiz-option" data-quiz-option>随机选择一个输出值</button>
+<button type="button" class="quiz-option" data-quiz-option>直接复制第一个输入</button>
+<p class="quiz-feedback" aria-live="polite"></p>
+</section>
+
+<hr>
+<section class="citations">
+<h2>References</h2>
+<ol>
+<li id="ref-1">感知机加权求和后过阈值。 <a href="https://www.deeplearningbook.org">[source]</a></li>
+</ol>
+</section>
+
+<nav class="crosslinks">
+<a href="./index.html">&larr; All lessons</a> &middot; <a href="../reference/perceptron-cheatsheet.html">速查:感知机</a>
+</nav>
+
+<aside class="ask-agent" data-ask-agent>有任何不清楚的地方,随时问我——我是你的老师。</aside>
+
+<script>
+document.querySelectorAll('[data-quiz]').forEach(function (quiz) {
+  var feedback = quiz.querySelector('.quiz-feedback');
+  quiz.querySelectorAll('[data-quiz-option]').forEach(function (option) {
+    option.addEventListener('click', function () {
+      var correct = option.getAttribute('data-correct') !== null;
+      option.classList.add(correct ? 'is-correct' : 'is-wrong');
+      if (feedback) { feedback.textContent = correct ? '\u2713 Correct.' : '\u2717 Not quite.'; }
+    });
+  });
+});
+</script>
+</body>
+</html>
